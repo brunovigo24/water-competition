@@ -6,6 +6,7 @@ import { supabaseBrowser } from "@/lib/supabase/client";
 import { Button, Card, Input } from "@/components/ui";
 import { formatLiters, mlToLiters } from "@/lib/format";
 import { weekRangeLabel } from "@/lib/week";
+import { setLastGroupId } from "@/lib/localPrefs";
 
 type LeaderRow = {
   group_id: string;
@@ -87,6 +88,7 @@ export default function GroupPage() {
     let unsub: (() => void) | null = null;
     (async () => {
       try {
+        setLastGroupId(groupId);
         const supabase = supabaseBrowser();
         await loadGroup();
         await loadRanking();

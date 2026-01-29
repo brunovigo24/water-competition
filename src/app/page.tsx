@@ -4,14 +4,18 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { Button, Card, Input } from "@/components/ui";
+import { getLastGroupId, setLastGroupId } from "@/lib/localPrefs";
 
 type GroupRow = { id: string; name: string; code: string };
+type MyGroupRow = { group_id: string; groups: GroupRow | GroupRow[] | null };
 
 export default function HomePage() {
   const router = useRouter();
 
   const [ready, setReady] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
+  const [myGroups, setMyGroups] = useState<GroupRow[]>([]);
+  const [loadingMyGroups, setLoadingMyGroups] = useState(false);
 
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
@@ -50,6 +54,40 @@ export default function HomePage() {
         if (profile.data?.name) setName(profile.data.name);
       }
 
+      // Load groups where I'm already a member
+      if (uid) {
+        setLoadingMyGroups(true);
+        const mg = await supabase
+          .from("group_members")
+          .select("group_id, groups(id,name,code)")
+          .eq("user_id", uid);
+        setLoadingMyGroups(false);
+        if (!mounted) return;
+        if (!mg.error) {
+          const list = (mg.data ?? [])
+            .map((r) => {
+              const g = (r as unknown as MyGroupRow).groups;
+              if (!g) return null;
+              return Array.isArray(g) ? g[0] : g;
+            })
+            .filter(Boolean) as GroupRow[];
+          setMyGroups(list);
+
+          // Auto-continue: last group (or only group)
+          const last = getLastGroupId();
+          const lastExists = last && list.some((g) => g.id === last);
+          if (lastExists) {
+            router.push(`/g/${last}`);
+            return;
+          }
+          if (list.length === 1) {
+            setLastGroupId(list[0].id);
+            router.push(`/g/${list[0].id}`);
+            return;
+          }
+        }
+      }
+
       setReady(true);
     })();
     return () => {
@@ -80,9 +118,12 @@ export default function HomePage() {
       if (ins.error) throw new Error(ins.error.message);
 
       const groupId = ins.data.id as string;
-      const mem = await supabase.from("group_members").insert({ group_id: groupId, user_id: userId! });
+      const mem = await supabase
+        .from("group_members")
+        .upsert({ group_id: groupId, user_id: userId! }, { onConflict: "user_id,group_id", ignoreDuplicates: true });
       if (mem.error) throw new Error(mem.error.message);
 
+      setLastGroupId(groupId);
       router.push(`/g/${groupId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erro inesperado");
@@ -128,8 +169,12 @@ export default function HomePage() {
     setJoining(true);
     try {
       await saveNameIfNeeded();
-      const mem = await supabase.from("group_members").insert({ group_id: groupId, user_id: userId! });
+      const mem = await supabase
+        .from("group_members")
+        .upsert({ group_id: groupId, user_id: userId! }, { onConflict: "user_id,group_id", ignoreDuplicates: true });
       if (mem.error) throw new Error(mem.error.message);
+
+      setLastGroupId(groupId);
       router.push(`/g/${groupId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erro inesperado");
@@ -155,6 +200,30 @@ export default function HomePage() {
       </div>
 
       {error && <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm">{error}</div>}
+
+      {myGroups.length > 0 && (
+        <Card title="✅ Você já está em" subtitle="Continue de onde parou">
+          <div className="space-y-2">
+            {myGroups.map((g) => (
+              <button
+                key={g.id}
+                onClick={() => {
+                  setLastGroupId(g.id);
+                  router.push(`/g/${g.id}`);
+                }}
+                className="flex w-full items-center justify-between rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-left hover:bg-black/30"
+              >
+                <div>
+                  <div className="font-semibold">{g.name}</div>
+                  <div className="text-xs text-white/60">Código: {g.code}</div>
+                </div>
+                <div className="text-sm text-white/70">Abrir →</div>
+              </button>
+            ))}
+            {loadingMyGroups && <div className="text-xs text-white/60">Carregando seus grupos…</div>}
+          </div>
+        </Card>
+      )}
 
       <Card title="👤 Seu nome">
         <Input label="Como você quer aparecer no ranking?" value={name} onChange={setName} placeholder="Ex: Bruno" />
