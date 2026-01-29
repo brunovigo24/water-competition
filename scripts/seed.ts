@@ -27,11 +27,20 @@ async function main() {
 
   // 1) Group
   const groupName = "Time Produto";
-  const g = await admin.from("groups").insert({ name: groupName }).select("id,code").single();
-  if (g.error) throw new Error(g.error.message);
+  const existing = await admin.from("groups").select("id,code").eq("name", groupName).order("created_at", { ascending: true }).limit(1);
+  if (existing.error) throw new Error(existing.error.message);
 
-  const groupId = g.data.id as string;
-  const code = g.data.code as string;
+  let groupId: string;
+  let code: string;
+  if (existing.data && existing.data.length > 0) {
+    groupId = existing.data[0].id as string;
+    code = existing.data[0].code as string;
+  } else {
+    const g = await admin.from("groups").insert({ name: groupName }).select("id,code").single();
+    if (g.error) throw new Error(g.error.message);
+    groupId = g.data.id as string;
+    code = g.data.code as string;
+  }
 
   // 2) Users (auth + profile via trigger)
   const people = [

@@ -61,8 +61,9 @@ Abra `http://localhost:3000`.
 
 Na home:
 
-- escolha seu **nome**
-- crie um grupo (ex: “Time Produto”) **ou** entre com **código** / busca por nome
+- faça login com **e-mail + link/código**
+- na primeira vez, informe seu **nome** (para aparecer no ranking)
+- clique no **grupo fixo** da competição e entre
 
 Na tela do grupo:
 

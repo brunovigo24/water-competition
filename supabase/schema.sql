@@ -86,6 +86,15 @@ from week_logs wl
 join public.users u on u.id = wl.user_id
 group by wl.group_id, wl.user_id, u.name;
 
+-- Default "fixed" group (MVP): create if none exists
+do $$
+begin
+  if not exists (select 1 from public.groups) then
+    insert into public.groups (name) values ('Rapaziada Dev');
+  end if;
+end;
+$$;
+
 -- Realtime publication (required for postgres_changes)
 -- If you get "publication does not exist", run this in Supabase:
 --   alter publication supabase_realtime add table public.water_logs;

@@ -20,18 +20,15 @@ export default function HomePage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [myGroups, setMyGroups] = useState<GroupRow[]>([]);
   const [loadingMyGroups, setLoadingMyGroups] = useState(false);
+  const [availableGroups, setAvailableGroups] = useState<GroupRow[]>([]);
+  const [loadingGroups, setLoadingGroups] = useState(false);
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [sendingCode, setSendingCode] = useState(false);
   const [verifying, setVerifying] = useState(false);
-  const [creating, setCreating] = useState(false);
   const [joining, setJoining] = useState(false);
-
-  const [groupName, setGroupName] = useState("Time Produto");
-  const [query, setQuery] = useState("");
-  const [matches, setMatches] = useState<GroupRow[]>([]);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -102,8 +99,18 @@ export default function HomePage() {
     [router]
   );
 
+  const refreshAvailableGroups = useCallback(async () => {
+    const supabase = supabaseBrowser();
+    setLoadingGroups(true);
+    const res = await supabase.from("groups").select("id,name,code").order("created_at", { ascending: true });
+    setLoadingGroups(false);
+    if (res.error) throw new Error(res.error.message);
+    setAvailableGroups((res.data ?? []) as GroupRow[]);
+  }, []);
+
   useEffect(() => {
     let mounted = true;
+    let authSubscription: any = null;
     (async () => {
       const supabase = supabaseBrowser();
       setError(null);
@@ -120,21 +127,23 @@ export default function HomePage() {
           setStep("loggedIn");
 
           // Persist chosen name (from pending or input)
-          const n = (name || getPending().name).trim();
-          if (n) {
-            const up = await supabase.from("users").upsert({ id: uid, name: n });
-            if (!up.error) setName(n);
+          const pendingName = getPending().name.trim();
+          if (pendingName) {
+            const up = await supabase.from("users").upsert({ id: uid, name: pendingName });
+            if (!up.error) setName(pendingName);
           }
 
           clearPending();
           setOtp("");
           try {
             await refreshMyGroups(uid);
+            await refreshAvailableGroups();
           } catch {
             // ignore
           }
         }
       });
+      authSubscription = (sub as any)?.subscription ?? null;
 
       const { data } = await supabase.auth.getSession();
       const session = data.session;
@@ -153,6 +162,12 @@ export default function HomePage() {
         // If user already requested an OTP, stay on code step
         if (pending.email) setStep("awaitingCode");
         else setStep("loggedOut");
+        // Show the fixed group(s) even before login (read-only list)
+        try {
+          await refreshAvailableGroups();
+        } catch {
+          // ignore
+        }
         return;
       }
 
@@ -165,12 +180,18 @@ export default function HomePage() {
       if (profile.data?.name) setName(profile.data.name);
 
       await refreshMyGroups(uid);
+      await refreshAvailableGroups();
     })();
     return () => {
       mounted = false;
-      // best-effort: subscription is created inside async; ignore if missing
+      // best-effort: unsubscribe
+      try {
+        authSubscription?.unsubscribe?.();
+      } catch {
+        // ignore
+      }
     };
-  }, [refreshMyGroups]);
+  }, [refreshAvailableGroups, refreshMyGroups]);
 
   async function sendLoginCode() {
     const supabase = supabaseBrowser();
@@ -242,6 +263,7 @@ export default function HomePage() {
       }
 
       await refreshMyGroups(uid);
+      await refreshAvailableGroups();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erro ao validar código");
     } finally {
@@ -266,65 +288,6 @@ export default function HomePage() {
     if (!n) throw new Error("Escolha um nome 🙂");
     const up = await supabase.from("users").upsert({ id: userId, name: n });
     if (up.error) throw new Error(up.error.message);
-  }
-
-  async function createGroup() {
-    const supabase = supabaseBrowser();
-    setError(null);
-    setCreating(true);
-    try {
-      await saveNameIfNeeded();
-
-      const gName = groupName.trim();
-      if (!gName) throw new Error("Nome do grupo inválido");
-
-      const ins = await supabase.from("groups").insert({ name: gName }).select("id").single();
-      if (ins.error) throw new Error(ins.error.message);
-
-      const groupId = ins.data.id as string;
-      const mem = await supabase
-        .from("group_members")
-        .upsert({ group_id: groupId, user_id: userId! }, { onConflict: "user_id,group_id", ignoreDuplicates: true });
-      if (mem.error) throw new Error(mem.error.message);
-
-      setLastGroupId(groupId);
-      router.push(`/g/${groupId}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Erro inesperado");
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  async function searchGroups(): Promise<GroupRow[]> {
-    const supabase = supabaseBrowser();
-    setError(null);
-    const q = query.trim();
-    if (!q) {
-      setMatches([]);
-      return [];
-    }
-
-    // If it's likely a code (short), try exact code first.
-    const exactCode = await supabase.from("groups").select("id,name,code").eq("code", q.toUpperCase()).limit(5);
-    if (exactCode.data && exactCode.data.length) {
-      const list = exactCode.data as GroupRow[];
-      setMatches(list);
-      return list;
-    }
-
-    const byName = await supabase
-      .from("groups")
-      .select("id,name,code")
-      .ilike("name", `%${q}%`)
-      .limit(10);
-    if (byName.error) {
-      setError(byName.error.message);
-      return [];
-    }
-    const list = (byName.data ?? []) as GroupRow[];
-    setMatches(list);
-    return list;
   }
 
   async function joinGroup(groupId: string) {
@@ -412,89 +375,58 @@ export default function HomePage() {
         </Card>
       )}
 
-      {step !== "loggedIn" ? null : myGroups.length > 0 && (
-        <Card title="✅ Você já está em" subtitle="Continue de onde parou">
-          <div className="space-y-2">
-            {myGroups.map((g) => (
-              <button
-                key={g.id}
-                onClick={() => {
-                  setLastGroupId(g.id);
-                  router.push(`/g/${g.id}`);
-                }}
-                className="flex w-full items-center justify-between rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-left hover:bg-black/30"
-              >
-                <div>
-                  <div className="font-semibold">{g.name}</div>
-                  <div className="text-xs text-white/60">Código: {g.code}</div>
-                </div>
-                <div className="text-sm text-white/70">Abrir →</div>
-              </button>
-            ))}
-            {loadingMyGroups && <div className="text-xs text-white/60">Carregando seus grupos…</div>}
-          </div>
-        </Card>
-      )}
-
       {step === "loggedIn" && (
         <>
-          <Card title="👤 Seu nome" subtitle="Você pode ajustar quando quiser">
-            <Input label="Como você quer aparecer no ranking?" value={name} onChange={setName} placeholder="Ex: Bruno" />
-            <div className="mt-2 text-xs text-white/60">Isso atualiza seu nome no ranking.</div>
-            <div className="mt-3">
-              <Button variant="secondary" onClick={() => void saveNameIfNeeded()}>
-                Salvar nome
-              </Button>
-            </div>
-          </Card>
-
-          <Card title="➕ Criar grupo" subtitle="Ex: “Time Produto”, “Growth”, “Pessoas Legais”">
-            <div className="space-y-3">
-              <Input label="Nome do grupo" value={groupName} onChange={setGroupName} placeholder="Time Produto" />
-              <Button onClick={createGroup} disabled={creating}>
-                {creating ? "Criando…" : "Criar e entrar"}
-              </Button>
-            </div>
-          </Card>
-
-          <Card title="🚪 Entrar em grupo" subtitle="Cole um código (ex: A1B2C3) ou busque pelo nome">
-            <div className="space-y-3">
-              <Input label="Código ou nome" value={query} onChange={setQuery} placeholder="A1B2C3 ou Produto" />
-              <div className="grid grid-cols-2 gap-2">
-                <Button variant="secondary" onClick={searchGroups} disabled={joining}>
-                  Buscar
-                </Button>
-                <Button
-                  onClick={() => {
-                    void (async () => {
-                      const list = await searchGroups();
-                      if (list.length === 1) await joinGroup(list[0].id);
-                    })();
-                  }}
-                  disabled={joining}
-                >
-                  {joining ? "Entrando…" : "Entrar (se 1 resultado)"}
-                </Button>
+          {name ? (
+            <Card title={`👋 Oi, ${name}!`} subtitle="Escolha o grupo e bora beber água.">
+              <div className="text-xs text-white/60">Você já está logado — não precisa preencher seu nome de novo.</div>
+            </Card>
+          ) : (
+            <Card title="👤 Seu nome" subtitle="Só uma vez — para aparecer no ranking">
+              <Input label="Como você quer aparecer no ranking?" value={name} onChange={setName} placeholder="Ex: Bruno" />
+              <div className="mt-3">
+                <Button onClick={() => void saveNameIfNeeded()}>Salvar e continuar</Button>
               </div>
+            </Card>
+          )}
 
-              {matches.length > 0 && (
-                <div className="space-y-2">
-                  {matches.map((g) => (
+          <Card title="🏁 Grupo da competição" subtitle="Clique para entrar (grupo fixo)">
+            {loadingGroups ? (
+              <div className="py-4 text-center text-white/70">Carregando grupo…</div>
+            ) : availableGroups.length === 0 ? (
+              <div className="py-4 text-center text-white/70">
+                Nenhum grupo encontrado. Rode o SQL/seed para criar o grupo padrão.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {availableGroups.map((g) => {
+                  const alreadyMember = myGroups.some((m) => m.id === g.id);
+                  return (
                     <button
                       key={g.id}
-                      onClick={() => void joinGroup(g.id)}
-                      className="flex w-full items-center justify-between rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-left hover:bg-black/30"
+                      onClick={() => {
+                        if (!name) return;
+                        if (alreadyMember) {
+                          setLastGroupId(g.id);
+                          router.push(`/g/${g.id}`);
+                          return;
+                        }
+                        void joinGroup(g.id);
+                      }}
+                      className="flex w-full items-center justify-between rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-left hover:bg-black/30 disabled:opacity-60"
+                      disabled={!name || joining}
                     >
                       <div>
                         <div className="font-semibold">{g.name}</div>
                         <div className="text-xs text-white/60">Código: {g.code}</div>
                       </div>
-                      <div className="text-sm text-white/70">Entrar →</div>
+                      <div className="text-sm text-white/70">{alreadyMember ? "Abrir →" : "Entrar →"}</div>
                     </button>
-                  ))}
-                </div>
-              )}
-            </div>
+                  );
+                })}
+                {loadingMyGroups && <div className="text-xs text-white/60">Carregando sua participação…</div>}
+              </div>
+            )}
           </Card>
         </>
       )}
