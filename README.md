@@ -13,6 +13,9 @@ MVP web (Next.js + Supabase) para competir “quem bebe mais água na semana” 
 Crie um projeto no Supabase e rode o SQL:
 
 - (Auth) Em **Authentication → Providers**, habilite **Email** (OTP / Magic Link)
+- (Auth) Em **Authentication → URL Configuration**:
+  - **Site URL**: use sua URL (local: `http://localhost:3000`, prod: sua URL da Vercel)
+  - **Redirect URLs**: adicione também `http://localhost:3000/**` e sua URL da Vercel `https://SEU-APP.vercel.app/**`
 - Abra o **SQL Editor** no Supabase
 - Cole e execute o arquivo `supabase/schema.sql`
 

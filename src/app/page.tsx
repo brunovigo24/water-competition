@@ -111,6 +111,31 @@ export default function HomePage() {
       if (pending.email) setEmail(pending.email);
       if (pending.name) setName(pending.name);
 
+      // React to magic-link sign-in (user returns with #access_token...)
+      const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (!mounted) return;
+        if (event === "SIGNED_IN" && session?.user?.id) {
+          const uid = session.user.id;
+          setUserId(uid);
+          setStep("loggedIn");
+
+          // Persist chosen name (from pending or input)
+          const n = (name || getPending().name).trim();
+          if (n) {
+            const up = await supabase.from("users").upsert({ id: uid, name: n });
+            if (!up.error) setName(n);
+          }
+
+          clearPending();
+          setOtp("");
+          try {
+            await refreshMyGroups(uid);
+          } catch {
+            // ignore
+          }
+        }
+      });
+
       const { data } = await supabase.auth.getSession();
       const session = data.session;
 
@@ -143,6 +168,7 @@ export default function HomePage() {
     })();
     return () => {
       mounted = false;
+      // best-effort: subscription is created inside async; ignore if missing
     };
   }, [refreshMyGroups]);
 
@@ -165,7 +191,11 @@ export default function HomePage() {
       setPending(e, n);
       const res = await supabase.auth.signInWithOtp({
         email: e,
-        options: { shouldCreateUser: true }
+        options: {
+          shouldCreateUser: true,
+          // Ensures the magic-link points to the current environment (localhost vs Vercel)
+          emailRedirectTo: `${window.location.origin}/`
+        }
       });
       if (res.error) throw new Error(res.error.message);
       setStep("awaitingCode");
@@ -360,7 +390,11 @@ export default function HomePage() {
 
             {step === "awaitingCode" && (
               <>
-                <Input label="Código do e-mail" value={otp} onChange={setOtp} placeholder="123456" />
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/80">
+                  Se você recebeu um <b>link</b>, clique nele e volte pra esta aba — o login acontece automaticamente.
+                  Se recebeu um <b>código</b>, cole abaixo.
+                </div>
+                <Input label="Código (se houver)" value={otp} onChange={setOtp} placeholder="123456" />
                 <div className="grid grid-cols-2 gap-2">
                   <Button variant="secondary" onClick={() => setStep("loggedOut")} disabled={verifying}>
                     Trocar e-mail
