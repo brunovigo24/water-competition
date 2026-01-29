@@ -6,13 +6,13 @@ MVP web (Next.js + Supabase) para competir “quem bebe mais água na semana” 
 
 - Next.js 14 (App Router) + TypeScript + React
 - TailwindCSS
-- Supabase: Auth (anônimo), Postgres, Realtime (`postgres_changes`)
+- Supabase: Auth (email OTP), Postgres, Realtime (`postgres_changes`)
 
 ## 1) Configurar Supabase
 
 Crie um projeto no Supabase e rode o SQL:
 
-- (Auth) Em **Authentication → Providers**, habilite **Anonymous sign-ins**
+- (Auth) Em **Authentication → Providers**, habilite **Email** (OTP / Magic Link)
 - Abra o **SQL Editor** no Supabase
 - Cole e execute o arquivo `supabase/schema.sql`
 
@@ -94,6 +94,6 @@ O script vai imprimir os emails/senhas criados (apenas para teste).
 
 ## Notas de MVP
 
-- Auth é **anônimo** (sem senha). O “nome” é salvo em `public.users`.
+- Auth é **por e-mail + código (OTP)** (sem senha). O “nome” é salvo em `public.users`.
 - Realtime: o app assina inserts em `public.water_logs` e, a cada evento, **refaz a query** do ranking (simples e confiável).
 

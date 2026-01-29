@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { Button, Card, Input } from "@/components/ui";
@@ -8,16 +8,24 @@ import { getLastGroupId, setLastGroupId } from "@/lib/localPrefs";
 
 type GroupRow = { id: string; name: string; code: string };
 type MyGroupRow = { group_id: string; groups: GroupRow | GroupRow[] | null };
+type AuthStep = "checking" | "loggedOut" | "awaitingCode" | "loggedIn";
+
+const KEY_PENDING_EMAIL = "watercup:pendingEmail";
+const KEY_PENDING_NAME = "watercup:pendingName";
 
 export default function HomePage() {
   const router = useRouter();
 
-  const [ready, setReady] = useState(false);
+  const [step, setStep] = useState<AuthStep>("checking");
   const [userId, setUserId] = useState<string | null>(null);
   const [myGroups, setMyGroups] = useState<GroupRow[]>([]);
   const [loadingMyGroups, setLoadingMyGroups] = useState(false);
 
   const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [otp, setOtp] = useState("");
+  const [sendingCode, setSendingCode] = useState(false);
+  const [verifying, setVerifying] = useState(false);
   const [creating, setCreating] = useState(false);
   const [joining, setJoining] = useState(false);
 
@@ -27,73 +35,199 @@ export default function HomePage() {
 
   const [error, setError] = useState<string | null>(null);
 
+  function isValidEmail(v: string) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim().toLowerCase());
+  }
+
+  function setPending(email: string, name: string) {
+    try {
+      localStorage.setItem(KEY_PENDING_EMAIL, email);
+      localStorage.setItem(KEY_PENDING_NAME, name);
+    } catch {
+      // ignore
+    }
+  }
+
+  function getPending() {
+    try {
+      return {
+        email: localStorage.getItem(KEY_PENDING_EMAIL) ?? "",
+        name: localStorage.getItem(KEY_PENDING_NAME) ?? ""
+      };
+    } catch {
+      return { email: "", name: "" };
+    }
+  }
+
+  function clearPending() {
+    try {
+      localStorage.removeItem(KEY_PENDING_EMAIL);
+      localStorage.removeItem(KEY_PENDING_NAME);
+    } catch {
+      // ignore
+    }
+  }
+
+  const refreshMyGroups = useCallback(
+    async (uid: string) => {
+    const supabase = supabaseBrowser();
+    setLoadingMyGroups(true);
+    const mg = await supabase.from("group_members").select("group_id, groups(id,name,code)").eq("user_id", uid);
+    setLoadingMyGroups(false);
+    if (mg.error) throw new Error(mg.error.message);
+
+    const list = (mg.data ?? [])
+      .map((r) => {
+        const g = (r as unknown as MyGroupRow).groups;
+        if (!g) return null;
+        return Array.isArray(g) ? g[0] : g;
+      })
+      .filter(Boolean) as GroupRow[];
+
+    setMyGroups(list);
+
+    // Auto-continue: last group (or only group)
+    const last = getLastGroupId();
+    const lastExists = last && list.some((g) => g.id === last);
+    if (lastExists) {
+      router.push(`/g/${last}`);
+      return;
+    }
+    if (list.length === 1) {
+      setLastGroupId(list[0].id);
+      router.push(`/g/${list[0].id}`);
+      return;
+    }
+    },
+    [router]
+  );
+
   useEffect(() => {
     let mounted = true;
     (async () => {
       const supabase = supabaseBrowser();
       setError(null);
+      const pending = getPending();
+      if (pending.email) setEmail(pending.email);
+      if (pending.name) setName(pending.name);
+
       const { data } = await supabase.auth.getSession();
-      if (!data.session) {
-        const res = await supabase.auth.signInAnonymously();
-        if (res.error) {
-          if (!mounted) return;
-          setError(res.error.message);
-          return;
-        }
+      const session = data.session;
+
+      // If user is anonymous, force logout (we want unique login now)
+      if (session?.user && (session.user as any).is_anonymous) {
+        await supabase.auth.signOut();
       }
 
-      const { data: sess } = await supabase.auth.getSession();
-      const uid = sess.session?.user.id ?? null;
+      const { data: sess2 } = await supabase.auth.getSession();
+      const session2 = sess2.session;
+      const uid = session2?.user.id ?? null;
       if (!mounted) return;
+
+      if (!uid) {
+        // If user already requested an OTP, stay on code step
+        if (pending.email) setStep("awaitingCode");
+        else setStep("loggedOut");
+        return;
+      }
+
       setUserId(uid);
+      setStep("loggedIn");
 
       // Load current name (if any)
-      if (uid) {
-        const profile = await supabase.from("users").select("name").eq("id", uid).maybeSingle();
-        if (!mounted) return;
-        if (profile.data?.name) setName(profile.data.name);
-      }
+      const profile = await supabase.from("users").select("name").eq("id", uid).maybeSingle();
+      if (!mounted) return;
+      if (profile.data?.name) setName(profile.data.name);
 
-      // Load groups where I'm already a member
-      if (uid) {
-        setLoadingMyGroups(true);
-        const mg = await supabase
-          .from("group_members")
-          .select("group_id, groups(id,name,code)")
-          .eq("user_id", uid);
-        setLoadingMyGroups(false);
-        if (!mounted) return;
-        if (!mg.error) {
-          const list = (mg.data ?? [])
-            .map((r) => {
-              const g = (r as unknown as MyGroupRow).groups;
-              if (!g) return null;
-              return Array.isArray(g) ? g[0] : g;
-            })
-            .filter(Boolean) as GroupRow[];
-          setMyGroups(list);
-
-          // Auto-continue: last group (or only group)
-          const last = getLastGroupId();
-          const lastExists = last && list.some((g) => g.id === last);
-          if (lastExists) {
-            router.push(`/g/${last}`);
-            return;
-          }
-          if (list.length === 1) {
-            setLastGroupId(list[0].id);
-            router.push(`/g/${list[0].id}`);
-            return;
-          }
-        }
-      }
-
-      setReady(true);
+      await refreshMyGroups(uid);
     })();
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [refreshMyGroups]);
+
+  async function sendLoginCode() {
+    const supabase = supabaseBrowser();
+    setError(null);
+    const e = email.trim().toLowerCase();
+    const n = name.trim();
+    if (!isValidEmail(e)) {
+      setError("Digite um e-mail válido.");
+      return;
+    }
+    if (!n) {
+      setError("Digite seu nome (como vai aparecer no ranking).");
+      return;
+    }
+
+    setSendingCode(true);
+    try {
+      setPending(e, n);
+      const res = await supabase.auth.signInWithOtp({
+        email: e,
+        options: { shouldCreateUser: true }
+      });
+      if (res.error) throw new Error(res.error.message);
+      setStep("awaitingCode");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erro ao enviar código");
+    } finally {
+      setSendingCode(false);
+    }
+  }
+
+  async function verifyCode() {
+    const supabase = supabaseBrowser();
+    setError(null);
+    const e = email.trim().toLowerCase();
+    const token = otp.trim();
+    if (!isValidEmail(e)) {
+      setError("E-mail inválido.");
+      return;
+    }
+    if (!token) {
+      setError("Digite o código do e-mail.");
+      return;
+    }
+
+    setVerifying(true);
+    try {
+      const res = await supabase.auth.verifyOtp({ email: e, token, type: "email" });
+      if (res.error) throw new Error(res.error.message);
+
+      const { data: sess } = await supabase.auth.getSession();
+      const uid = sess.session?.user.id ?? null;
+      if (!uid) throw new Error("Falha ao iniciar sessão.");
+
+      setUserId(uid);
+      setStep("loggedIn");
+      clearPending();
+      setOtp("");
+
+      // Persist the chosen name in public.users
+      const n = name.trim();
+      if (n) {
+        const up = await supabase.from("users").upsert({ id: uid, name: n });
+        if (up.error) throw new Error(up.error.message);
+      }
+
+      await refreshMyGroups(uid);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erro ao validar código");
+    } finally {
+      setVerifying(false);
+    }
+  }
+
+  async function logout() {
+    const supabase = supabaseBrowser();
+    setError(null);
+    await supabase.auth.signOut();
+    setUserId(null);
+    setMyGroups([]);
+    clearPending();
+    setStep("loggedOut");
+  }
 
   async function saveNameIfNeeded() {
     const supabase = supabaseBrowser();
@@ -183,7 +317,7 @@ export default function HomePage() {
     }
   }
 
-  if (!ready) {
+  if (step === "checking") {
     return (
       <div className="py-10 text-center text-white/80">
         <div className="text-2xl font-semibold">Water Cup 💧</div>
@@ -201,7 +335,50 @@ export default function HomePage() {
 
       {error && <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm">{error}</div>}
 
-      {myGroups.length > 0 && (
+      {(step === "loggedIn" || step === "awaitingCode") && (
+        <div className="flex justify-end">
+          <button
+            onClick={() => void logout()}
+            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+          >
+            Sair
+          </button>
+        </div>
+      )}
+
+      {(step === "loggedOut" || step === "awaitingCode") && (
+        <Card title="🔐 Entrar" subtitle="Seu login é único (por e-mail). Sem senha.">
+          <div className="space-y-3">
+            <Input label="Seu nome" value={name} onChange={setName} placeholder="Ex: Bruno" />
+            <Input label="Seu e-mail" value={email} onChange={setEmail} placeholder="ex: bruno@empresa.com" />
+
+            {step === "loggedOut" && (
+              <Button onClick={() => void sendLoginCode()} disabled={sendingCode}>
+                {sendingCode ? "Enviando…" : "Enviar código por e-mail"}
+              </Button>
+            )}
+
+            {step === "awaitingCode" && (
+              <>
+                <Input label="Código do e-mail" value={otp} onChange={setOtp} placeholder="123456" />
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="secondary" onClick={() => setStep("loggedOut")} disabled={verifying}>
+                    Trocar e-mail
+                  </Button>
+                  <Button onClick={() => void verifyCode()} disabled={verifying}>
+                    {verifying ? "Validando…" : "Entrar"}
+                  </Button>
+                </div>
+                <div className="text-xs text-white/60">
+                  Dica: confira spam/lixo eletrônico. O código expira.
+                </div>
+              </>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {step !== "loggedIn" ? null : myGroups.length > 0 && (
         <Card title="✅ Você já está em" subtitle="Continue de onde parou">
           <div className="space-y-2">
             {myGroups.map((g) => (
@@ -225,59 +402,68 @@ export default function HomePage() {
         </Card>
       )}
 
-      <Card title="👤 Seu nome">
-        <Input label="Como você quer aparecer no ranking?" value={name} onChange={setName} placeholder="Ex: Bruno" />
-        <div className="mt-2 text-xs text-white/60">Dica: dá pra mudar depois.</div>
-      </Card>
-
-      <Card title="➕ Criar grupo" subtitle="Ex: “Time Produto”, “Growth”, “Pessoas Legais”">
-        <div className="space-y-3">
-          <Input label="Nome do grupo" value={groupName} onChange={setGroupName} placeholder="Time Produto" />
-          <Button onClick={createGroup} disabled={creating}>
-            {creating ? "Criando…" : "Criar e entrar"}
-          </Button>
-        </div>
-      </Card>
-
-      <Card title="🚪 Entrar em grupo" subtitle="Cole um código (ex: A1B2C3) ou busque pelo nome">
-        <div className="space-y-3">
-          <Input label="Código ou nome" value={query} onChange={setQuery} placeholder="A1B2C3 ou Produto" />
-          <div className="grid grid-cols-2 gap-2">
-            <Button variant="secondary" onClick={searchGroups} disabled={joining}>
-              Buscar
-            </Button>
-            <Button
-              onClick={() => {
-                void (async () => {
-                  const list = await searchGroups();
-                  if (list.length === 1) await joinGroup(list[0].id);
-                })();
-              }}
-              disabled={joining}
-            >
-              {joining ? "Entrando…" : "Entrar (se 1 resultado)"}
-            </Button>
-          </div>
-
-          {matches.length > 0 && (
-            <div className="space-y-2">
-              {matches.map((g) => (
-                <button
-                  key={g.id}
-                  onClick={() => void joinGroup(g.id)}
-                  className="flex w-full items-center justify-between rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-left hover:bg-black/30"
-                >
-                  <div>
-                    <div className="font-semibold">{g.name}</div>
-                    <div className="text-xs text-white/60">Código: {g.code}</div>
-                  </div>
-                  <div className="text-sm text-white/70">Entrar →</div>
-                </button>
-              ))}
+      {step === "loggedIn" && (
+        <>
+          <Card title="👤 Seu nome" subtitle="Você pode ajustar quando quiser">
+            <Input label="Como você quer aparecer no ranking?" value={name} onChange={setName} placeholder="Ex: Bruno" />
+            <div className="mt-2 text-xs text-white/60">Isso atualiza seu nome no ranking.</div>
+            <div className="mt-3">
+              <Button variant="secondary" onClick={() => void saveNameIfNeeded()}>
+                Salvar nome
+              </Button>
             </div>
-          )}
-        </div>
-      </Card>
+          </Card>
+
+          <Card title="➕ Criar grupo" subtitle="Ex: “Time Produto”, “Growth”, “Pessoas Legais”">
+            <div className="space-y-3">
+              <Input label="Nome do grupo" value={groupName} onChange={setGroupName} placeholder="Time Produto" />
+              <Button onClick={createGroup} disabled={creating}>
+                {creating ? "Criando…" : "Criar e entrar"}
+              </Button>
+            </div>
+          </Card>
+
+          <Card title="🚪 Entrar em grupo" subtitle="Cole um código (ex: A1B2C3) ou busque pelo nome">
+            <div className="space-y-3">
+              <Input label="Código ou nome" value={query} onChange={setQuery} placeholder="A1B2C3 ou Produto" />
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="secondary" onClick={searchGroups} disabled={joining}>
+                  Buscar
+                </Button>
+                <Button
+                  onClick={() => {
+                    void (async () => {
+                      const list = await searchGroups();
+                      if (list.length === 1) await joinGroup(list[0].id);
+                    })();
+                  }}
+                  disabled={joining}
+                >
+                  {joining ? "Entrando…" : "Entrar (se 1 resultado)"}
+                </Button>
+              </div>
+
+              {matches.length > 0 && (
+                <div className="space-y-2">
+                  {matches.map((g) => (
+                    <button
+                      key={g.id}
+                      onClick={() => void joinGroup(g.id)}
+                      className="flex w-full items-center justify-between rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-left hover:bg-black/30"
+                    >
+                      <div>
+                        <div className="font-semibold">{g.name}</div>
+                        <div className="text-xs text-white/60">Código: {g.code}</div>
+                      </div>
+                      <div className="text-sm text-white/70">Entrar →</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+        </>
+      )}
     </main>
   );
 }

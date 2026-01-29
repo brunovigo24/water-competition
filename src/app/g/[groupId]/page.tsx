@@ -44,12 +44,8 @@ export default function GroupPage() {
       setError(null);
       const { data } = await supabase.auth.getSession();
       if (!data.session) {
-        const res = await supabase.auth.signInAnonymously();
-        if (res.error) {
-          if (!mounted) return;
-          setError(res.error.message);
-          return;
-        }
+        router.push("/");
+        return;
       }
       const { data: sess } = await supabase.auth.getSession();
       if (!mounted) return;
@@ -59,7 +55,7 @@ export default function GroupPage() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [router]);
 
   const loadGroup = useCallback(async () => {
     const supabase = supabaseBrowser();
